@@ -1,0 +1,513 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  id: number;
+}
+
+interface Conversation {
+  id: number;
+  title: string;
+}
+
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+const STORAGE_KEY = "patatakis_conv_id";
+
+function saveConvId(id: number) {
+  try { localStorage.setItem(STORAGE_KEY, String(id)); } catch { /* ignore */ }
+}
+function loadConvId(): number | null {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    return v ? parseInt(v, 10) : null;
+  } catch { return null; }
+}
+function clearConvId() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+}
+
+async function createConversation(): Promise<number> {
+  const res = await fetch(`${BASE}/api/openai/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "Πατατάκης Chat" }),
+  });
+  if (!res.ok) throw new Error("Could not create conversation");
+  const data: Conversation = await res.json();
+  saveConvId(data.id);
+  return data.id;
+}
+
+export default function PatatakisChat() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [started, setStarted] = useState(false);
+  const [networkError, setNetworkError] = useState(false);
+  const chatboxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const msgIdRef = useRef(0);
+  const convIdRef = useRef<number | null>(null);
+
+  const nextId = () => ++msgIdRef.current;
+
+  const scrollBottom = () => {
+    setTimeout(() => {
+      if (chatboxRef.current) {
+        chatboxRef.current.scrollTop = chatboxRef.current.scrollHeight;
+      }
+    }, 40);
+  };
+
+  useEffect(() => { scrollBottom(); }, [messages, isTyping]);
+
+  // Restore conversation id from localStorage on mount
+  useEffect(() => {
+    const saved = loadConvId();
+    if (saved) {
+      setConversationId(saved);
+      convIdRef.current = saved;
+    }
+  }, []);
+
+  const getOrCreateConversation = useCallback(async (): Promise<number> => {
+    // Use ref for latest value without closure staleness
+    if (convIdRef.current) return convIdRef.current;
+
+    try {
+      const id = await createConversation();
+      convIdRef.current = id;
+      setConversationId(id);
+      return id;
+    } catch {
+      // Retry once with a short delay
+      await new Promise((r) => setTimeout(r, 1000));
+      const id = await createConversation();
+      convIdRef.current = id;
+      setConversationId(id);
+      return id;
+    }
+  }, []);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || isTyping) return;
+
+    setNetworkError(false);
+    if (!started) setStarted(true);
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", content: text, id: nextId() }]);
+    setIsTyping(true);
+    scrollBottom();
+
+    let attempts = 0;
+    while (attempts < 2) {
+      try {
+        const convId = await getOrCreateConversation();
+        const res = await fetch(`${BASE}/api/openai/conversations/${convId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: text }),
+        });
+
+        // If conversation not found on server, reset and retry with a new one
+        if (res.status === 404 && attempts === 0) {
+          clearConvId();
+          convIdRef.current = null;
+          setConversationId(null);
+          attempts++;
+          continue;
+        }
+
+        if (!res.ok || !res.body) throw new Error("Stream failed");
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let assistantMsg = "";
+        const msgId = nextId();
+
+        setIsTyping(false);
+        setMessages((prev) => [...prev, { role: "assistant", content: "", id: msgId }]);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          for (const line of chunk.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.content) {
+                assistantMsg += data.content;
+                const snap = assistantMsg;
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === msgId ? { ...m, content: snap } : m))
+                );
+                scrollBottom();
+              }
+            } catch { /* ignore malformed SSE lines */ }
+          }
+        }
+
+        // Success — exit the retry loop
+        break;
+
+      } catch {
+        attempts++;
+        if (attempts >= 2) {
+          setIsTyping(false);
+          setNetworkError(true);
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: "Ουπς! Δεν μπορώ να συνδεθώ τώρα. Έλεγξε το ίντερνετ και δοκίμασε ξανά! 📡",
+              id: nextId(),
+            },
+          ]);
+        }
+      }
+    }
+  };
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void send();
+    }
+  };
+
+  return (
+    <div style={{
+      margin: 0,
+      padding: 0,
+      background: "#212121",
+      color: "#fff",
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      display: "flex",
+      flexDirection: "column",
+      height: "100dvh",
+      overflow: "hidden",
+    }}>
+
+      {/* ── Top nav / input bar ── */}
+      <div style={{
+        background: "#212121",
+        height: 72,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "0 16px",
+        position: "fixed",
+        top: 0,
+        width: "100%",
+        zIndex: 1000,
+        boxSizing: "border-box",
+        borderBottom: started ? "1px solid #2a2a2a" : "none",
+      }}>
+        <div style={{
+          width: "100%",
+          maxWidth: 680,
+          position: "relative",
+          display: "flex",
+          alignItems: "center",
+        }}>
+          <input
+            ref={inputRef}
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Ρώτησε τον Πατατάκη..."
+            autoComplete="off"
+            style={{
+              width: "100%",
+              background: "#303030",
+              border: "1.5px solid #3a3a3a",
+              borderRadius: 32,
+              padding: "14px 56px 14px 22px",
+              color: "#fff",
+              fontSize: 15,
+              outline: "none",
+              transition: "border-color 0.2s, box-shadow 0.2s",
+              fontFamily: "inherit",
+              WebkitAppearance: "none",
+            }}
+            onFocus={(e) => {
+              e.target.style.borderColor = "#555";
+              e.target.style.boxShadow = "0 0 0 3px rgba(255,204,0,0.08)";
+            }}
+            onBlur={(e) => {
+              e.target.style.borderColor = "#3a3a3a";
+              e.target.style.boxShadow = "none";
+            }}
+          />
+          <button
+            onClick={() => void send()}
+            disabled={isTyping || !input.trim()}
+            style={{
+              position: "absolute",
+              right: 8,
+              width: 36,
+              height: 36,
+              borderRadius: "50%",
+              background: input.trim() && !isTyping ? "#ffcc00" : "#3a3a3a",
+              border: "none",
+              color: input.trim() && !isTyping ? "#1a1a1a" : "#555",
+              fontSize: 16,
+              fontWeight: 700,
+              cursor: isTyping || !input.trim() ? "default" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "background 0.2s, color 0.2s, transform 0.1s",
+              touchAction: "manipulation",
+              flexShrink: 0,
+            }}
+            onMouseDown={(e) => {
+              if (input.trim() && !isTyping)
+                (e.currentTarget as HTMLButtonElement).style.transform = "scale(0.9)";
+            }}
+            onMouseUp={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
+            }}
+          >
+            ↑
+          </button>
+        </div>
+      </div>
+
+      {/* ── Network error banner ── */}
+      {networkError && (
+        <div style={{
+          position: "fixed",
+          top: 72,
+          left: 0,
+          right: 0,
+          background: "#3a1a1a",
+          borderBottom: "1px solid #6a2a2a",
+          color: "#ff9090",
+          fontSize: 13,
+          textAlign: "center",
+          padding: "8px 16px",
+          zIndex: 999,
+        }}>
+          Δεν υπάρχει σύνδεση — τσέκαρε το ίντερνετ και δοκίμασε ξανά.{" "}
+          <span
+            onClick={() => setNetworkError(false)}
+            style={{ cursor: "pointer", textDecoration: "underline", opacity: 0.7 }}
+          >
+            ✕
+          </span>
+        </div>
+      )}
+
+      {/* ── Main area ── */}
+      <div style={{
+        flex: 1,
+        paddingTop: 72,
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+      }}>
+
+        {/* Landing screen */}
+        {!started && (
+          <div style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            textAlign: "center",
+          }}>
+            <div style={{
+              fontSize: 90,
+              marginBottom: 20,
+              filter: "drop-shadow(0 0 18px rgba(255,204,0,0.3))",
+              lineHeight: 1,
+            }}>
+              🍟
+            </div>
+            <h1 style={{
+              fontSize: "clamp(24px, 6vw, 36px)",
+              fontWeight: 700,
+              margin: "0 0 14px",
+              color: "#fff",
+            }}>
+              Γεια! Είμαι ο Πατατάκης.
+            </h1>
+            <p style={{
+              color: "#b0b0b0",
+              fontSize: "clamp(15px, 3.5vw, 19px)",
+              lineHeight: 1.6,
+              maxWidth: 440,
+              margin: "0 0 32px",
+            }}>
+              Είμαι 10 χρονών, Έλληνας, και ξέρω πολλά πράγματα.<br />
+              Ρώτα με ό,τι θέλεις — σχολείο, ζωή, οτιδήποτε!
+            </p>
+
+            {/* Quick suggestion chips */}
+            <div style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 10,
+              justifyContent: "center",
+              maxWidth: 500,
+            }}>
+              {[
+                { emoji: "📐", text: "Βοήθεια με μαθηματικά" },
+                { emoji: "😂", text: "Πες μου ένα αστείο" },
+                { emoji: "🌍", text: "Πού είναι η Ελλάδα;" },
+                { emoji: "🦕", text: "Πότε εξαφανίστηκαν οι δεινόσαυροι;" },
+                { emoji: "⚽", text: "Ποια είναι η καλύτερη ομάδα;" },
+                { emoji: "🚀", text: "Πώς πετάνε τα ρακέτα;" },
+              ].map(({ emoji, text }) => (
+                <button
+                  key={text}
+                  onClick={() => {
+                    setInput(text);
+                    setTimeout(() => inputRef.current?.focus(), 50);
+                  }}
+                  style={{
+                    background: "#2a2a2a",
+                    border: "1px solid #3a3a3a",
+                    borderRadius: 20,
+                    color: "#d0d0d0",
+                    fontSize: 14,
+                    padding: "9px 16px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    transition: "background 0.15s, border-color 0.15s, color 0.15s",
+                    fontFamily: "inherit",
+                    whiteSpace: "nowrap",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.background = "#333";
+                    (e.currentTarget as HTMLButtonElement).style.borderColor = "#555";
+                    (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.background = "#2a2a2a";
+                    (e.currentTarget as HTMLButtonElement).style.borderColor = "#3a3a3a";
+                    (e.currentTarget as HTMLButtonElement).style.color = "#d0d0d0";
+                  }}
+                >
+                  <span>{emoji}</span>
+                  <span>{text}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Chat messages */}
+        {started && (
+          <div
+            ref={chatboxRef}
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: "24px 16px 16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 20,
+              scrollBehavior: "smooth",
+              WebkitOverflowScrolling: "touch",
+            }}
+          >
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className="bubble-pop"
+                style={{
+                  display: "flex",
+                  flexDirection: msg.role === "user" ? "row-reverse" : "row",
+                  alignItems: "flex-start",
+                  gap: 12,
+                  maxWidth: 720,
+                  width: "100%",
+                  margin: "0 auto",
+                }}
+              >
+                <div style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: "50%",
+                  background: msg.role === "user" ? "#3a3a3a" : "#ffcc00",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: msg.role === "user" ? 15 : 18,
+                  flexShrink: 0,
+                  marginTop: 2,
+                  color: msg.role === "user" ? "#fff" : "#212121",
+                  fontWeight: 700,
+                }}>
+                  {msg.role === "user" ? "Εσύ" : "🍟"}
+                </div>
+
+                <div style={{
+                  maxWidth: "80%",
+                  padding: "12px 16px",
+                  borderRadius: msg.role === "user"
+                    ? "18px 18px 4px 18px"
+                    : "18px 18px 18px 4px",
+                  background: msg.role === "user" ? "#2f2f2f" : "#303030",
+                  border: "1px solid #3a3a3a",
+                  fontSize: 15,
+                  lineHeight: 1.6,
+                  color: "#fff",
+                  wordBreak: "break-word",
+                  whiteSpace: "pre-wrap",
+                  fontFamily: "inherit",
+                }}>
+                  {msg.content || <span style={{ opacity: 0.3 }}>…</span>}
+                </div>
+              </div>
+            ))}
+
+            {/* Typing indicator */}
+            {isTyping && (
+              <div style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 12,
+                maxWidth: 720,
+                width: "100%",
+                margin: "0 auto",
+              }}>
+                <div style={{
+                  width: 34, height: 34, borderRadius: "50%",
+                  background: "#ffcc00",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 18, flexShrink: 0, marginTop: 2,
+                }}>🍟</div>
+                <div style={{
+                  padding: "14px 18px",
+                  borderRadius: "18px 18px 18px 4px",
+                  background: "#303030",
+                  border: "1px solid #3a3a3a",
+                  display: "flex",
+                  gap: 5,
+                  alignItems: "center",
+                }}>
+                  <div className="typing-dot" style={{ background: "#b0b0b0" }} />
+                  <div className="typing-dot" style={{ background: "#b0b0b0" }} />
+                  <div className="typing-dot" style={{ background: "#b0b0b0" }} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
