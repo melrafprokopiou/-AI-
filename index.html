@@ -1,0 +1,149 @@
+λ<!DOCTYPE html>
+<html lang="el">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ZicoChat AI</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { background:#1a1a1a; color:#fff; font-family: sans-serif; display:flex; flex-direction:column; align-items:center; padding:20px; }
+    .intro-text { text-align:center; max-width:440px; margin-bottom:16px; font-size:clamp(15px,3.5vw,18px); line-height:1.5;}
+    .chip-container { display:flex; flex-wrap:wrap; gap:7px; justify-content:center; max-width:500px; margin-bottom:12px; }
+    .suggestion-chip { background:#2a2a2a; border:1px solid #3a3a3a; border-radius:20px; color:#d0d0d0; padding:9px 12px; cursor:pointer; display:flex; align-items:center; gap:7px; }
+    .suggestion-chip:hover { background:#333; color:#fff; border-color:#555; }
+    .chat { width:90%; max-width:520px; background:#111; border:1px solid #222; border-radius:10px; padding:12px; box-sizing:border-box; }
+    .messages { max-height:320px; overflow:auto; padding:6px; display:flex; flex-direction:column; gap:8px; }
+    .msg { padding:8px 10px; border-radius:10px; max-width:80%; }
+    .me { align-self:flex-end; background:#007bff; color:#fff; }
+    .bot { align-self:flex-start; background:#2a2a2a; color:#ddd; border:1px solid #333; }
+    .input-row { display:flex; gap:8px; margin-top:10px; }
+    .input-box { flex:1; padding:10px; border-radius:8px; border:1px solid #333; background:#222; color:#fff; outline:none; }
+    .send-btn { padding:10px 14px; border-radius:8px; background:#00a86b; color:#fff; border:none; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    function ZicoChat() {
+      const [input, setInput] = useState('');
+      const [messages, setMessages] = useState([
+        { id: 0, from: 'bot', text: 'Γεια! Είμαι ο Πατατάκης! Ρώτα με ό,τι θέλεις.' }
+      ]);
+      const inputRef = useRef(null);
+      const msgId = useRef(1);
+      const chips = [
+        { emoji: "📐", text: "Βοήθεια με μαθηματικά" },
+        { emoji: "😂", text: "Πες μου ένα αστείο" },
+        { emoji: "🌍", text: "Πού είναι η Ελλάδα;" },
+        { emoji: "🦕", text: "Πότε εξαφανίστηκαν οι δεινόσαυροι;" },
+        { emoji: "⚽", text: "Ποια είναι η καλύτερη ομάδα;" },
+        { emoji: "🚀", text: "Πώς πετάνε τα ρακέτα;" }
+      ];
+
+      function addMessage(from, text) {
+        setMessages(m => [...m, { id: msgId.current++, from, text }]);
+      }
+
+      function handleSend() {
+        const text = input.trim();
+        if (!text) return;
+        addMessage('me', text);
+        setInput('');
+        // fake typing delay and reply
+        setTimeout(() => {
+          const reply = generateReply(text);
+          addMessage('bot', reply);
+        }, 600 + Math.random()*700);
+      }
+
+      function generateReply(text) {
+        const t = text.toLowerCase();
+        if (t.includes('αστείο') || t.includes('αστείο') || t.includes('πες')) {
+          return 'Γιατί ο υπολογιστής πήγε στο γιατρό; Είχε ιό! Χαχα.';
+        }
+        if (t.includes('μαθημα') || t.includes('πρόβλημα')) {
+          return 'Θες βοήθεια με άλγεβρα ή γεωμετρία; Πες ένα παράδειγμα.';
+        }
+        if (t.includes('ελλαδα') || t.includes('ελλάδα') || t.includes('πού είναι')) {
+          return 'Η Ελλάδα είναι στη νοτιοανατολική Ευρώπη, με πολλά νησιά και ωραίες παραλίες.';
+        }
+        if (t.includes('δεινόσαυροι') || t.includes('δεινοσαυρο')) {
+          return 'Οι δεινόσαυροι εξαφανίστηκαν πριν περίπου 66 εκατ. χρόνια, πιθανώς από έναν αστεροειδή.';
+        }
+        if (t.includes('ομάδα') || t.includes('καλύτερη')) {
+          return 'Η καλύτερη ομάδα είναι αυτή που αγαπάς! Αλλά κι εγώ λατρεύω το πράσινο της Ομόνοιας, αν είναι να πω μία.';
+        }
+        if (t.includes('ρακέτα') || t.includes('πέτα') || t.includes('πώς πετά')) {
+          return 'Οι ρουκέτες πετάνε επειδή εξωθούν αέριο προς τα πίσω — δράση και αντίδραση (Νεύτων rules!).';
+        }
+        if (t.includes('γεια') || t.includes('γειά')) {
+          return 'Γειαα! Τι κάνεις;';
+        }
+        return 'Χμμ, ενδιαφέρον! Πες λίγο πιο συγκεκριμένα ή διάλεξε ένα από τα chips πάνω.';
+      }
+
+      function handleKey(e) {
+        if (e.key === 'Enter') handleSend();
+      }
+
+      function handleChipClick(text) {
+        setInput(text);
+        setTimeout(() => inputRef.current && inputRef.current.focus(), 50);
+      }
+
+      useEffect(() => {
+        // auto-scroll to bottom on new message
+        const el = document.querySelector('.messages');
+        if (el) el.scrollTop = el.scrollHeight;
+      }, [messages]);
+
+      return (
+        <div style={{width:'100%', maxWidth:560}}>
+          <div className="intro-text">
+            <p>Είμαι 10 χρονών, Έλληνας, και ξέρω πολλά πράγματα. Ρώτα με ό,τι θέλεις — σχολείο, ζωή, οτιδήποτε!</p>
+          </div>
+
+          <div className="chip-container">
+            {chips.map(c => (
+              <button key={c.text} className="suggestion-chip" onClick={() => handleChipClick(c.text)}>
+                <span>{c.emoji}</span><span>{c.text}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="chat">
+            <div className="messages">
+              {messages.map(m => (
+                <div key={m.id} className={`msg ${m.from === 'me' ? 'me' : 'bot'}`}>
+                  {m.text}
+                </div>
+              ))}
+            </div>
+
+            <div className="input-row">
+              <input
+                ref={inputRef}
+                className="input-box"
+                type="text"
+                placeholder="Γράψε εδώ..."
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKey}
+              />
+              <button className="send-btn" onClick={handleSend}>Send</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<ZicoChat />);
+  </script>
+</body>
+</html>
